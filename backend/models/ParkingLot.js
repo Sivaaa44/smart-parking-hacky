@@ -39,7 +39,11 @@ const parkingLotSchema = new mongoose.Schema({
   isOpen: {
     type: Boolean,
     default: true
-  }
+  },
+  slots: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'ParkingSlot'
+  }]
 }, {
   timestamps: true
 });
