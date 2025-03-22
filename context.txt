@@ -1,0 +1,14 @@
+Urban parking is a significant challenge: drivers often spend excessive time searching for spots, contributing to traffic congestion, pollution, and frustration. Existing solutions—such as static signage or basic apps—lack real-time accuracy and fail to guide users directly to available spaces. Parking authorities also struggle with inefficient space utilization and revenue collection due to outdated systems. Park Smart addresses these issues by:
+
+Providing real-time updates on parking availability.
+Guiding drivers to open spots via an interactive map.
+Enabling spot reservations to guarantee parking.
+Laying the groundwork for integration with payment systems and smart infrastructure.
+Project Scope (Hackathon Implementation)
+Given the hackathon’s constraints, we’re creating a simplified yet functional version of Park Smart. Key details include:
+
+Data Simulation: Instead of deploying real sensors or cameras, we use initial seed data to populate parking lot information (e.g., lot name, location, total spaces, initial occupancy). A /simulate endpoint mimics vehicle entry and exit, dynamically updating availability to simulate real-world conditions.
+Frontend Focus: The user-facing component is a web-based interactive map showing parking lots with real-time availability. Users can view statuses, click lots for details, and reserve spots.
+Backend Support: A lightweight server handles the seed data, simulation logic, and API endpoints to feed the frontend with updated information.
+No Hardware: The prototype relies entirely on software-based simulation, bypassing the need for physical sensors or cameras.
+Future-Ready Design: While full integration with payment gateways or smart meters isn’t implemented, the system’s architecture considers these possibilities for scalability.

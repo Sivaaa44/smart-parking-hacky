@@ -11,9 +11,13 @@ const reservationSchema = new mongoose.Schema({
     ref: 'ParkingLot',
     required: true
   },
-  parkingSlot: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'ParkingSlot',
+  vehicleType: {
+    type: String,
+    enum: ['car', 'bike'],
+    required: true
+  },
+  vehicleNumber: {
+    type: String,
     required: true
   },
   startTime: {
@@ -26,8 +30,17 @@ const reservationSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['active', 'completed', 'cancelled'],
-    default: 'active'
+    enum: ['pending', 'confirmed', 'completed', 'cancelled'],
+    default: 'pending'
+  },
+  paymentStatus: {
+    type: String,
+    enum: ['pending', 'completed'],
+    default: 'pending'
+  },
+  amount: {
+    type: Number,
+    required: true
   },
   actualEntryTime: {
     type: Date
@@ -43,6 +56,6 @@ const reservationSchema = new mongoose.Schema({
     type: Date,
     default: Date.now
   }
-});
+}, { timestamps: true });
 
 module.exports = mongoose.model('Reservation', reservationSchema); 

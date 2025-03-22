@@ -92,18 +92,18 @@ const parkingLotsController = {
       // Generate random change in available spaces
       const change = Math.floor(Math.random() * 3) - 1;
       const newAvailable = Math.min(
-        Math.max(lot.availableSpaces + change, 0), 
-        lot.totalSpaces
+        Math.max(lot.availableSpots + change, 0),
+        lot.totalSpots
       );
       
-      lot.availableSpaces = newAvailable;
+      lot.availableSpots = newAvailable;
       await lot.save();
 
       const io = req.app.get('io');
       if (io) {
         io.to(`lot-${lot._id}`).emit('availability-update', {
           lotId: lot._id,
-          availableSpaces: lot.availableSpaces
+          availableSpots: lot.availableSpots
         });
       }
 
@@ -125,13 +125,13 @@ const parkingLotsController = {
           $group: {
             _id: null,
             totalLots: { $sum: 1 },
-            totalSpaces: { $sum: "$totalSpaces" },
-            availableSpaces: { $sum: "$availableSpaces" },
+            totalSpots: { $sum: "$totalSpots" },
+            availableSpots: { $sum: "$availableSpots" },
             averageOccupancy: {
               $avg: {
                 $subtract: [
                   100,
-                  { $multiply: [{ $divide: ["$availableSpaces", "$totalSpaces"] }, 100] }
+                  { $multiply: [{ $divide: ["$availableSpots", "$totalSpots"] }, 100] }
                 ]
               }
             }
@@ -141,8 +141,8 @@ const parkingLotsController = {
 
       res.json(stats[0] || {
         totalLots: 0,
-        totalSpaces: 0,
-        availableSpaces: 0,
+        totalSpots: 0,
+        availableSpots: 0,
         averageOccupancy: 0
       });
     } catch (error) {
@@ -170,8 +170,8 @@ const parkingLotsController = {
           }
         },
         isOpen: true,
-        availableSpaces: { $gt: 0 }
-      }).sort({ availableSpaces: -1 });
+        availableSpots: { $gt: 0 }
+      }).sort({ availableSpots: -1 });
 
       res.json(lots);
     } catch (error) {
@@ -378,7 +378,7 @@ const parkingLotsController = {
 
       // Update parking lot availability
       const lot = await ParkingLot.findById(reservation.parkingLot);
-      lot.availableSpaces += 1;
+      lot.availableSpots += 1;
       await lot.save();
 
       // Emit socket event
@@ -386,7 +386,7 @@ const parkingLotsController = {
       if (io) {
         io.to(`lot-${lot._id}`).emit('availability-update', {
           lotId: lot._id,
-          availableSpaces: lot.availableSpaces
+          availableSpots: lot.availableSpots
         });
       }
 
@@ -396,6 +396,44 @@ const parkingLotsController = {
       res.status(500).json({ 
         message: 'Error cancelling reservation', 
         error: error.message 
+      });
+    }
+  },
+
+  // Get lot availability
+  async getLotAvailability(req, res) {
+    try {
+      if (!req.params.id.match(/^[0-9a-fA-F]{24}$/)) {
+        return res.status(400).json({ message: 'Invalid parking lot ID' });
+      }
+
+      const lot = await ParkingLot.findById(req.params.id)
+        .select('name availableSpots totalSpots types rates');
+      
+      if (!lot) {
+        return res.status(404).json({
+          success: false,
+          message: 'Parking lot not found'
+        });
+      }
+
+      res.json({
+        success: true,
+        data: {
+          id: lot._id,
+          name: lot.name,
+          availableSpots: lot.availableSpots,
+          totalSpots: lot.totalSpots,
+          types: lot.types,
+          rates: lot.rates
+        }
+      });
+    } catch (error) {
+      console.error('getLotAvailability error:', error);
+      res.status(500).json({ 
+        success: false, 
+        message: 'Error fetching lot availability',
+        error: process.env.NODE_ENV === 'development' ? error.message : undefined
       });
     }
   }

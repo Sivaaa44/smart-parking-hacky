@@ -5,36 +5,123 @@ const dotenv = require('dotenv');
 
 dotenv.config();
 
-const sampleParkingLots = [
+
+const chennaiParkingLots = [
   {
-    name: "Downtown Parking A",
+    name: "T Nagar Parking Complex",
     location: {
       type: "Point",
-      coordinates: [-73.935242, 40.730610]
+      coordinates: [80.2337, 13.0418] // longitude, latitude
     },
-    address: "123 Main St, Downtown",
-    totalSpaces: 100,
-    availableSpaces: 100,
-    hourlyRate: 10,
-    isOpen: true
+    address: "Pondy Bazaar, T Nagar",
+    landmark: "Near Panagal Park",
+    totalSpots: 20,
+    availableSpots: 20,
+    isOpen: true,
+    types: ["car", "bike"],
+    rates: {
+      car: {
+        hourly: 50,
+        daily: 400
+      },
+      bike: {
+        hourly: 20,
+        daily: 150
+      }
+    },
+    operatingHours: {
+      open: "06:00",
+      close: "22:00"
+    }
   },
   {
-    name: "Midtown Parking B",
+    name: "Anna Nagar Tower Plaza",
     location: {
       type: "Point",
-      coordinates: [-73.935242, 40.730610]
+      coordinates: [80.2089, 13.0850]
     },
-    address: "456 Center St, Midtown",
-    totalSpaces: 150,
-    availableSpaces: 150,
-    hourlyRate: 15,
-    isOpen: true
+    address: "2nd Avenue, Anna Nagar",
+    landmark: "Near Tower Park",
+    totalSpots: 20,
+    availableSpots: 20,
+    isOpen: true,
+    types: ["car", "bike"],
+    rates: {
+      car: {
+        hourly: 40,
+        daily: 350
+      },
+      bike: {
+        hourly: 15,
+        daily: 120
+      }
+    },
+    operatingHours: {
+      open: "06:00",
+      close: "22:00"
+    }
+  },
+  {
+    name: "Mylapore Temple Car Park",
+    location: {
+      type: "Point",
+      coordinates: [80.2680, 13.0369]
+    },
+    address: "Mylapore, Chennai",
+    landmark: "Near Kapaleeshwarar Temple",
+    totalSpots: 20,
+    availableSpots: 20,
+    isOpen: true,
+    types: ["car", "bike"],
+    rates: {
+      car: {
+        hourly: 45,
+        daily: 380
+      },
+      bike: {
+        hourly: 18,
+        daily: 140
+      }
+    },
+    operatingHours: {
+      open: "06:00",
+      close: "21:00"
+    }
+  },
+  {
+    name: "Marina Beach Parking Zone",
+    location: {
+      type: "Point",
+      coordinates: [80.2825, 13.0550]
+    },
+    address: "Marina Beach Road",
+    landmark: "Opposite Marina Lighthouse",
+    totalSpots: 20,
+    availableSpots: 20,
+    isOpen: true,
+    types: ["car", "bike"],
+    rates: {
+      car: {
+        hourly: 55,
+        daily: 450
+      },
+      bike: {
+        hourly: 25,
+        daily: 200
+      }
+    },
+    operatingHours: {
+      open: "05:00",
+      close: "23:00"
+    }
   }
 ];
 
 const createParkingSlots = async (parkingLot) => {
   const slots = [];
-  for (let i = 1; i <= parkingLot.totalSpaces; i++) {
+  const totalSlots = parkingLot.totalSpots || 20; // Fallback to 20 if not defined
+  
+  for (let i = 1; i <= totalSlots; i++) {
     const slot = new ParkingSlot({
       parkingLot: parkingLot._id,
       slotNumber: `A${i.toString().padStart(3, '0')}`,
@@ -62,7 +149,7 @@ const seedDatabase = async () => {
 
     // Create parking lots and their slots
     console.log('Creating parking lots and slots...');
-    for (const lotData of sampleParkingLots) {
+    for (const lotData of chennaiParkingLots) {
       // Create the parking lot
       const lot = new ParkingLot(lotData);
       await lot.save();
@@ -99,4 +186,6 @@ process.on('unhandledRejection', (error) => {
   process.exit(1);
 });
 
-seedDatabase(); 
+seedDatabase();
+
+module.exports = chennaiParkingLots; 

@@ -22,15 +22,15 @@ class ParkingSimulator {
 
         // Random change in available spaces (-1, 0, or 1)
         const change = Math.floor(Math.random() * 3) - 1;
-        const newAvailable = Math.min(Math.max(lot.availableSpaces + change, 0), lot.totalSpaces);
+        const newAvailable = Math.min(Math.max(lot.availableSpots + change, 0), lot.totalSpots);
         
-        lot.availableSpaces = newAvailable;
+        lot.availableSpots = newAvailable;
         await lot.save();
 
         // Emit update
         this.io.to(`lot-${lotId}`).emit('availability-update', {
-          lotId: lot._id,
-          availableSpaces: lot.availableSpaces
+          lotId,
+          availableSpots: lot.availableSpots
         });
 
       } catch (error) {
@@ -76,14 +76,30 @@ class ParkingSimulator {
 
     const change = Math.random() < probability ? -1 : 1;
     const newAvailable = Math.min(
-      Math.max(lot.availableSpaces + change, 0),
-      lot.totalSpaces
+      Math.max(lot.availableSpots + change, 0),
+      lot.totalSpots
     );
 
-    lot.availableSpaces = newAvailable;
+    lot.availableSpots = newAvailable;
     await lot.save();
 
     return lot;
+  }
+
+  emitLotAvailability(lotId) {
+    ParkingLot.findById(lotId)
+      .select('availableSpots totalSpots')
+      .then(lot => {
+        if (!lot) return;
+        
+        this.io.to(`lot-${lotId}`).emit('availability-update', {
+          lotId,
+          availableSpots: lot.availableSpots
+        });
+      })
+      .catch(err => {
+        console.error('Error emitting lot availability:', err);
+      });
   }
 }
 

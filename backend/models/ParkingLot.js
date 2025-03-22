@@ -3,8 +3,7 @@ const mongoose = require('mongoose');
 const parkingLotSchema = new mongoose.Schema({
   name: {
     type: String,
-    required: true,
-    trim: true
+    required: true
   },
   location: {
     type: {
@@ -21,34 +20,37 @@ const parkingLotSchema = new mongoose.Schema({
     type: String,
     required: true
   },
-  totalSpaces: {
+  landmark: String,
+  totalSpots: {
     type: Number,
-    required: true,
-    min: 1
+    max: 20,
+    required: true
   },
-  availableSpaces: {
+  availableSpots: {
     type: Number,
-    required: true,
-    min: 0
+    required: true
   },
-  hourlyRate: {
-    type: Number,
-    required: true,
-    min: 0
+  types: [{
+    type: String,
+    enum: ['car', 'bike']
+  }],
+  rates: {
+    car: {
+      hourly: Number,
+      daily: Number
+    },
+    bike: {
+      hourly: Number,
+      daily: Number
+    }
   },
-  isOpen: {
-    type: Boolean,
-    default: true
-  },
-  slots: [{
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'ParkingSlot'
-  }]
-}, {
-  timestamps: true
-});
+  operatingHours: {
+    open: String,
+    close: String
+  }
+}, { timestamps: true });
 
-// Create geospatial index
+// Add geospatial index for location-based queries
 parkingLotSchema.index({ location: '2dsphere' });
 
 module.exports = mongoose.model('ParkingLot', parkingLotSchema); 

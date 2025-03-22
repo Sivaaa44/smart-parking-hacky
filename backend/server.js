@@ -6,6 +6,7 @@ const connectDB = require('./config/db');
 const http = require('http');
 const socketIo = require('socket.io');
 const ParkingSimulator = require('./utils/simulator');
+const reservationController = require('./controllers/reservations.controller');
 
 // Load environment variables before any other configuration
 dotenv.config();
@@ -56,6 +57,7 @@ app.set('simulator', simulator);
 // Routes
 app.use('/api/auth', require('./routes/auth.routes'));
 app.use('/api/parking-lots', require('./routes/parkingLots.routes'));
+app.use('/api/reservations', require('./routes/reservations.routes'));
 
 // Basic route
 app.get('/', (req, res) => {
@@ -69,6 +71,7 @@ io.on('connection', (socket) => {
   socket.on('subscribe-to-lot', (lotId) => {
     if (!lotId) return;
     socket.join(`lot-${lotId}`);
+    simulator.emitLotAvailability(lotId);
     console.log(`Client ${socket.id} subscribed to lot ${lotId}`);
   });
   
@@ -76,6 +79,19 @@ io.on('connection', (socket) => {
     if (!lotId) return;
     socket.leave(`lot-${lotId}`);
     console.log(`Client ${socket.id} unsubscribed from lot ${lotId}`);
+  });
+  
+  socket.on('create-reservation', async (data) => {
+    try {
+      const result = await reservationController.createReservation(data);
+      socket.emit('reservation-status', { success: true, data: result });
+      io.to(`lot-${data.lotId}`).emit('availability-update', {
+        lotId: data.lotId,
+        availableSpots: result.updatedAvailability
+      });
+    } catch (error) {
+      socket.emit('reservation-status', { success: false, error: error.message });
+    }
   });
   
   socket.on('error', (error) => {
