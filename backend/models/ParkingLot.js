@@ -47,6 +47,10 @@ const parkingLotSchema = new mongoose.Schema({
   operatingHours: {
     open: String,
     close: String
+  },
+  isOpen: {
+    type: Boolean,
+    default: true
   }
 }, { timestamps: true });
 

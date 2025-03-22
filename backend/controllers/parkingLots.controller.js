@@ -3,6 +3,7 @@ const Reservation = require('../models/Reservation');
 const ParkingSlot = require('../models/ParkingSlot');
 const moment = require('moment');
 const dateUtils = require('../utils/dateUtils');
+const {isTimeSlotAvailable} = require('./reservations.controller');
 
 const parkingLotsController = {
   // Get nearby parking lots
@@ -273,132 +274,6 @@ const parkingLotsController = {
     }
   },
 
-  // Create a reservation with specific slot
-  async createReservation(req, res) {
-    try {
-      const parkingLotId = req.params.id;
-      let { startTime, endTime } = req.body;
-      const userId = req.user._id;
-
-      // If no times provided, default to next available hour slot
-      if (!startTime) {
-        startTime = moment().startOf('hour').add(1, 'hour').toDate();
-        endTime = moment(startTime).add(1, 'hour').toDate();
-      } else {
-        startTime = moment(startTime).toDate();
-        endTime = moment(endTime).toDate();
-      }
-
-      // Validate times
-      if (moment(startTime).isBefore(moment())) {
-        return res.status(400).json({
-          message: 'Cannot book slots in the past'
-        });
-      }
-
-      // Find available slot
-      const slots = await ParkingSlot.find({ parkingLot: parkingLotId });
-      let availableSlot = null;
-
-      for (const slot of slots) {
-        if (await slot.isAvailableForPeriod(startTime, endTime)) {
-          availableSlot = slot;
-          break;
-        }
-      }
-
-      if (!availableSlot) {
-        return res.status(400).json({
-          message: 'No slots available for the requested time period'
-        });
-      }
-
-      // Create reservation
-      const reservation = new Reservation({
-        user: userId,
-        parkingLot: parkingLotId,
-        parkingSlot: availableSlot._id,
-        startTime,
-        endTime,
-        status: 'active'
-      });
-
-      await reservation.save();
-
-      // Update slot
-      availableSlot.currentReservation = reservation._id;
-      await availableSlot.save();
-
-      res.status(201).json(reservation);
-    } catch (error) {
-      res.status(500).json({
-        message: 'Error creating reservation',
-        error: error.message
-      });
-    }
-  },
-
-  // Get user's reservations
-  async getUserReservations(req, res) {
-    try {
-      const userId = req.user._id;
-      const reservations = await Reservation.find({ user: userId })
-        .populate('parkingLot', 'name address hourlyRate')
-        .sort({ startTime: -1 });
-
-      res.json(reservations);
-    } catch (error) {
-      console.error('getUserReservations error:', error);
-      res.status(500).json({ 
-        message: 'Error fetching reservations', 
-        error: error.message 
-      });
-    }
-  },
-
-  // Cancel reservation
-  async cancelReservation(req, res) {
-    try {
-      const reservationId = req.params.reservationId;
-      const userId = req.user._id;
-
-      const reservation = await Reservation.findOne({
-        _id: reservationId,
-        user: userId,
-        status: 'active'
-      });
-
-      if (!reservation) {
-        return res.status(404).json({ message: 'Active reservation not found' });
-      }
-
-      // Update reservation status
-      reservation.status = 'cancelled';
-      await reservation.save();
-
-      // Update parking lot availability
-      const lot = await ParkingLot.findById(reservation.parkingLot);
-      lot.availableSpots += 1;
-      await lot.save();
-
-      // Emit socket event
-      const io = req.app.get('io');
-      if (io) {
-        io.to(`lot-${lot._id}`).emit('availability-update', {
-          lotId: lot._id,
-          availableSpots: lot.availableSpots
-        });
-      }
-
-      res.json(reservation);
-    } catch (error) {
-      console.error('cancelReservation error:', error);
-      res.status(500).json({ 
-        message: 'Error cancelling reservation', 
-        error: error.message 
-      });
-    }
-  },
 
   // Get lot availability
   async getLotAvailability(req, res) {
@@ -434,6 +309,68 @@ const parkingLotsController = {
         success: false, 
         message: 'Error fetching lot availability',
         error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      });
+    }
+  },
+
+  // Check availability for a time slot
+  async checkAvailabilityForTime(req, res) {
+    try {
+      const { id } = req.params;
+      const { startTime, endTime } = req.query;
+      
+      if (!startTime || !endTime) {
+        return res.status(400).json({
+          message: 'Both startTime and endTime are required'
+        });
+      }
+      
+      // Find the parking lot
+      const parkingLot = await ParkingLot.findById(id);
+      if (!parkingLot) {
+        return res.status(404).json({ message: 'Parking lot not found' });
+      }
+      
+      // Reuse the isTimeSlotAvailable method from reservationsController
+      const isAvailable = await isTimeSlotAvailable(
+        id, 
+        new Date(startTime), 
+        new Date(endTime)
+      );
+      
+      // We need to get the count for the response, so get that from the same method
+      // that's used in isTimeSlotAvailable
+      const query = {
+        parkingLot: id,
+        status: { $in: ['pending', 'confirmed'] },
+        $or: [
+          { startTime: { $lte: new Date(startTime) }, endTime: { $gt: new Date(startTime) } },
+          { startTime: { $lt: new Date(endTime) }, endTime: { $gte: new Date(endTime) } },
+          { startTime: { $gte: new Date(startTime) }, endTime: { $lte: new Date(endTime) } }
+        ]
+      };
+      
+      const overlappingReservationsCount = await Reservation.countDocuments(query);
+      const spotsAvailableAtTime = parkingLot.totalSpots - overlappingReservationsCount;
+      
+      res.json({
+        success: true,
+        data: {
+          parkingLotId: id,
+          startTime,
+          endTime,
+          totalSpots: parkingLot.totalSpots,
+          reservedSpots: overlappingReservationsCount,
+          availableSpots: spotsAvailableAtTime,
+          isAvailable: isAvailable
+        }
+      });
+    } catch (error) {
+      console.error('Check availability error:', error);
+      res.status(500).json({ 
+        success: false, 
+        message: 'Error checking availability',
+        error: error.message 
       });
     }
   }

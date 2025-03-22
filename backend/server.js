@@ -27,8 +27,8 @@ const app = express();
 const server = http.createServer(app);
 const io = socketIo(server, {
   cors: {
-    origin: process.env.CLIENT_URL || "*",
-    methods: ["GET", "POST"],
+    origin: ['http://localhost:5173', 'http://localhost:3000'],
+    methods: ['GET', 'POST'],
     credentials: true
   }
 });
@@ -41,7 +41,7 @@ connectDB().catch(err => {
 
 // Middleware
 app.use(cors({
-  origin: process.env.CLIENT_URL || "*",
+  origin: ['http://localhost:5173', 'http://localhost:3000'],
   credentials: true
 }));
 app.use(morgan('dev'));
@@ -83,14 +83,18 @@ io.on('connection', (socket) => {
   
   socket.on('create-reservation', async (data) => {
     try {
-      const result = await reservationController.createReservation(data);
-      socket.emit('reservation-status', { success: true, data: result });
+      const result = await reservationController.createReservationSocket(data);
+      socket.emit('reservation-status', { success: true, data: result.reservation });
+      
       io.to(`lot-${data.lotId}`).emit('availability-update', {
         lotId: data.lotId,
         availableSpots: result.updatedAvailability
       });
     } catch (error) {
-      socket.emit('reservation-status', { success: false, error: error.message });
+      socket.emit('reservation-status', { 
+        success: false, 
+        error: error.message 
+      });
     }
   });
   

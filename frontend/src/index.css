@@ -1,13 +1,99 @@
-body {
-  margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
-    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
-    sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+@import "tailwindcss";
+
+@layer base {
+  html, body, #root {
+    @apply h-full w-full;
+  }
+
+  body {
+    @apply font-sans text-gray-900 bg-gray-50;
+  }
+
+  input, textarea, select {
+    @apply text-gray-900;
+  }
 }
 
-code {
-  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
-    monospace;
+@layer components {
+  /* Map styles */
+  .leaflet-container {
+    @apply w-full h-full z-10;
+  }
+
+  /* Custom marker styles */
+  .parking-marker {
+    @apply flex items-center justify-center rounded-full font-bold text-white w-9 h-9 shadow-md;
+  }
+
+  .marker-available {
+    @apply bg-green-500;
+  }
+
+  .marker-limited {
+    @apply bg-yellow-500;
+  }
+
+  .marker-full {
+    @apply bg-red-500;
+  }
+}
+
+@layer utilities {
+  /* Layout utilities */
+  #root {
+    @apply flex flex-col;
+  }
+
+  main {
+    @apply flex-1 flex flex-col;
+  }
+}
+
+
+.leaflet-container {
+  width: 100%;
+  height: 100%;
+  z-index: 1;
+}
+
+.custom-marker {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Make sure the root and body take up full height */
+html, body, #root {
+  height: 100%;
+  width: 100%;
+}
+
+#root {
+  display: flex;
+  flex-direction: column;
+}
+
+main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Custom styling for range inputs */
+input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #3b82f6;
+  cursor: pointer;
+}
+
+input[type=range]::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #3b82f6;
+  cursor: pointer;
 }
