@@ -129,10 +129,30 @@ const reservationsController = {
       
       const amount = Math.ceil(durationHours * rate);
       
-      // Create the reservation
+      // If the parking lot has individual slots, try to assign a specific slot
+      let assignedSlot = null;
+      if (process.env.USE_PARKING_SLOTS === 'true') {
+        try {
+          const availableSlots = await ParkingSlot.findAvailableSlots(
+            parkingLotId, 
+            parsedStartTime, 
+            parsedEndTime
+          );
+          
+          if (availableSlots.length > 0) {
+            assignedSlot = availableSlots[0];
+          }
+        } catch (error) {
+          console.warn('Could not assign specific parking slot:', error.message);
+          // Continue without a specific slot
+        }
+      }
+      
+      // Create the reservation with slot if available
       const reservation = new Reservation({
         user: userId,
         parkingLot: parkingLotId,
+        parkingSlot: assignedSlot ? assignedSlot._id : undefined,
         vehicleType,
         vehicleNumber,
         startTime: parsedStartTime,
@@ -144,17 +164,30 @@ const reservationsController = {
       
       await reservation.save();
       
-      // Update parking lot real-time availability (for current time only)
-      const now = moment();
-      if (moment(parsedStartTime).isSameOrBefore(now) && moment(parsedEndTime).isAfter(now)) {
-        lot.availableSpots = Math.max(0, lot.availableSpots - 1);
-        await lot.save();
+      // If a slot was assigned, update it
+      if (assignedSlot) {
+        assignedSlot.currentReservation = reservation._id;
+        assignedSlot.isOccupied = true;
+        await assignedSlot.save();
       }
       
-      // Emit socket event
+      // Always update the lot's available spots count and emit the event
+      // This ensures the map is updated
+      lot.availableSpots = Math.max(0, lot.availableSpots - 1);
+      await lot.save();
+      
+      // Emit socket event to ALL connected clients (not just those in the room)
       const io = req.app.get('io');
       if (io) {
+        console.log(`Emitting availability update for lot ${lot._id}, now: ${lot.availableSpots}`);
+        // Emit to the specific room
         io.to(`lot-${lot._id}`).emit('availability-update', {
+          lotId: lot._id,
+          availableSpots: lot.availableSpots
+        });
+        
+        // Also emit to a general channel for clients that might not be in the room
+        io.emit('map-availability-update', {
           lotId: lot._id,
           availableSpots: lot.availableSpots
         });

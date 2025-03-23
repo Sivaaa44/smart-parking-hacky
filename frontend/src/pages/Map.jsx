@@ -5,6 +5,8 @@ import L from 'leaflet';
 import axios from 'axios';
 import { AuthContext } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
+import { socket, subscribeToParkingLot, unsubscribeFromParkingLot } from '../lib/socket';
+import api from '../lib/api';
 
 // Fix Leaflet default icon issue
 delete L.Icon.Default.prototype._getIconUrl;
@@ -77,11 +79,34 @@ const MapPage = () => {
   });
   const mapRef = useRef(null);
   const { token, isAuthenticated } = useContext(AuthContext);
+  const subscribedLots = useRef(new Set());
 
   // Load parking lots on initial render - using default Chennai coordinates
   useEffect(() => {
-    // Using default Chennai coordinates
-    fetchDefaultParkingLots();
+    const fetchParkingLots = async () => {
+      try {
+        setIsLoading(true);
+        const response = await axios.get(`http://localhost:5000/api/parking-lots/nearby`, {
+          params: {
+            longitude: 80.2707,
+            latitude: 13.0827,
+            maxDistance: 10000
+          },
+          headers: {
+            Authorization: token ? `Bearer ${token}` : '' 
+          }
+        });
+        
+        setParkingLots(response.data.data || []);
+      } catch (error) {
+        console.error('Error fetching parking lots:', error);
+        setError('Could not load parking lots. Please try again later.');
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    
+    fetchParkingLots();
     setMapInitialized(true);
   }, [token]);
 
@@ -90,90 +115,62 @@ const MapPage = () => {
     applyFilters();
   }, [parkingLots, filters]);
 
-  // Fetch default parking lots using the nearby endpoint with Chennai coordinates
-  const fetchDefaultParkingLots = async () => {
-    setIsLoading(true);
-    setError(null);
-    try {
-      // Use the /nearby endpoint with default Chennai coordinates
-      const response = await axios.get(`http://localhost:5000/api/parking-lots/nearby`, {
-        params: {
-          longitude: 80.2707, // Chennai longitude
-          latitude: 13.0827,  // Chennai latitude
-          maxDistance: 10000  // 10km radius for wider coverage
-        },
-        headers: {
-          Authorization: token ? `Bearer ${token}` : '' 
-        }
-      });
+  // Set up socket listeners
+  useEffect(() => {
+    // Listen for availability updates
+    const handleAvailabilityUpdate = (data) => {
+      console.log('Received availability update:', data);
       
-      if (response.data && response.data.length > 0) {
-        setParkingLots(response.data);
-      } else {
-        // Fallback to mock data if no results
-        setParkingLots(getMockParkingLots());
-        setError('No parking lots found. Showing sample data.');
+      // Update the appropriate parking lot
+      setParkingLots(prevLots => 
+        prevLots.map(lot => 
+          lot._id === data.lotId 
+            ? { ...lot, availableSpots: data.availableSpots } 
+            : lot
+        )
+      );
+    };
+    
+    // Listen for both types of updates
+    socket.on('availability-update', handleAvailabilityUpdate);
+    socket.on('map-availability-update', handleAvailabilityUpdate);
+    
+    return () => {
+      // Clean up listeners on unmount
+      socket.off('availability-update', handleAvailabilityUpdate);
+      socket.off('map-availability-update', handleAvailabilityUpdate);
+      
+      // Unsubscribe from all lots
+      subscribedLots.current.forEach(lotId => {
+        unsubscribeFromParkingLot(lotId);
+      });
+    };
+  }, []);
+  
+  // Manage subscriptions when parking lots change
+  useEffect(() => {
+    // Only process if we have parking lots
+    if (!parkingLots.length) return;
+    
+    // Get current lot IDs as a set for efficient lookups
+    const currentLotIds = new Set(parkingLots.map(lot => lot._id));
+    
+    // Remove subscriptions for lots not in the current set
+    subscribedLots.current.forEach(lotId => {
+      if (!currentLotIds.has(lotId)) {
+        unsubscribeFromParkingLot(lotId);
+        subscribedLots.current.delete(lotId);
       }
-    } catch (err) {
-      console.error("Error fetching parking lots:", err);
-      // Use mock data if the API fails
-      setParkingLots(getMockParkingLots());
-      setError('Using sample data - Backend connection issue');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // Mock data in case the API fails
-  const getMockParkingLots = () => {
-    return [
-      {
-        _id: "1",
-        name: "Central Station Parking",
-        address: "Chennai Central, EVR Periyar Salai",
-        totalSpots: 100,
-        availableSpots: 45,
-        rates: { standard: { hourly: 40 } },
-        location: { coordinates: [80.2707, 13.0827] }
-      },
-      {
-        _id: "2",
-        name: "T. Nagar Parking Complex",
-        address: "Panagal Park, T. Nagar",
-        totalSpots: 80,
-        availableSpots: 10,
-        rates: { standard: { hourly: 50 } },
-        location: { coordinates: [80.2400, 13.0400] }
-      },
-      {
-        _id: "3",
-        name: "Marina Beach Parking",
-        address: "Marina Beach Road",
-        totalSpots: 120,
-        availableSpots: 0,
-        rates: { standard: { hourly: 30 } },
-        location: { coordinates: [80.2838, 13.0600] }
-      },
-      {
-        _id: "4",
-        name: "Phoenix Market City Parking",
-        address: "Velachery Main Road",
-        totalSpots: 200,
-        availableSpots: 75,
-        rates: { standard: { hourly: 60 } },
-        location: { coordinates: [80.2230, 13.0171] }
-      },
-      {
-        _id: "5",
-        name: "Express Avenue Parking",
-        address: "Whites Road, Royapettah",
-        totalSpots: 150,
-        availableSpots: 32,
-        rates: { standard: { hourly: 70 } },
-        location: { coordinates: [80.2610, 13.0559] }
+    });
+    
+    // Add new subscriptions
+    parkingLots.forEach(lot => {
+      if (!subscribedLots.current.has(lot._id)) {
+        subscribeToParkingLot(lot._id);
+        subscribedLots.current.add(lot._id);
       }
-    ];
-  };
+    });
+  }, [parkingLots.map(lot => lot._id).join(',')]);
 
   // Apply filters to parking lots
   const applyFilters = () => {
@@ -268,25 +265,20 @@ const MapPage = () => {
         }
       });
       
-      if (response.data && response.data.length > 0) {
+      console.log('Parking lots response:', response.data); // Add this log to debug
+      
+      // Make sure we're correctly handling the response structure
+      if (response.data && response.data.data && response.data.data.length > 0) {
+        setParkingLots(response.data.data);
+      } else if (response.data && Array.isArray(response.data) && response.data.length > 0) {
         setParkingLots(response.data);
       } else {
         // If no nearby lots found, show a helpful message
         setError('No parking lots found near your location. Try viewing all parking lots.');
-        // Keep existing parking lots visible if any
-        if (parkingLots.length === 0) {
-          setParkingLots(getMockParkingLots());
-        }
       }
     } catch (err) {
       console.error("Error fetching nearby parking lots:", err);
-      // Don't replace existing data with mock data if we already have real data
-      if (parkingLots.length === 0) {
-        setParkingLots(getMockParkingLots());
-        setError('Using demo data - could not fetch nearby parking lots.');
-      } else {
-        setError('Could not fetch nearby parking lots, showing previous results.');
-      }
+      setError('Could not fetch nearby parking lots. Please try again later.');
     } finally {
       setIsLoading(false);
     }
@@ -294,8 +286,36 @@ const MapPage = () => {
 
   // Reset view to show all lots (uses Chennai coordinates)
   const handleShowAllLots = () => {
-    fetchDefaultParkingLots();
     setCenter([13.0827, 80.2707]); // Reset to Chennai center
+    
+    // Use the same API call format that works elsewhere
+    setIsLoading(true);
+    axios.get(`http://localhost:5000/api/parking-lots/nearby`, {
+      params: {
+        longitude: 80.2707,
+        latitude: 13.0827,
+        maxDistance: 10000 // Use a larger radius to get more lots
+      },
+      headers: {
+        Authorization: token ? `Bearer ${token}` : '' 
+      }
+    })
+    .then(response => {
+      // Log the response to debug
+      console.log('All parking lots response:', response.data);
+      if (response.data && response.data.data) {
+        setParkingLots(response.data.data);
+      } else if (response.data && Array.isArray(response.data)) {
+        setParkingLots(response.data);
+      }
+    })
+    .catch(err => {
+      console.error("Error fetching all parking lots:", err);
+      setError('Could not load all parking lots.');
+    })
+    .finally(() => {
+      setIsLoading(false);
+    });
   };
 
   return (
@@ -319,6 +339,16 @@ const MapPage = () => {
               <path fillRule="evenodd" d="M5.05 4.05a7 7 0 119.9 9.9L10 18.9l-4.95-4.95a7 7 0 010-9.9zM10 11a2 2 0 100-4 2 2 0 000 4z" clipRule="evenodd" />
             </svg>
             Find Parking Near Me
+          </button>
+          
+          <button
+            onClick={handleShowAllLots}
+            className="w-full flex items-center justify-center bg-gray-200 hover:bg-gray-300 text-gray-800 py-2 px-4 rounded-md text-sm font-medium mt-2"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16m-7 6h7" />
+            </svg>
+            Show All Parking Lots
           </button>
           
           <div className="space-y-4">

@@ -11,6 +11,10 @@ const reservationSchema = new mongoose.Schema({
     ref: 'ParkingLot',
     required: true
   },
+  parkingSlot: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'ParkingSlot'
+  },
   vehicleType: {
     type: String,
     enum: ['car', 'bike'],

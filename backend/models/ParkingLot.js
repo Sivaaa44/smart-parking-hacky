@@ -57,4 +57,27 @@ const parkingLotSchema = new mongoose.Schema({
 // Add geospatial index for location-based queries
 parkingLotSchema.index({ location: '2dsphere' });
 
+// Method to calculate real-time available spots
+parkingLotSchema.methods.calculateAvailableSpots = async function(time = new Date()) {
+  const Reservation = mongoose.model('Reservation');
+  
+  // Count active reservations for the given time
+  const activeReservations = await Reservation.countDocuments({
+    parkingLot: this._id,
+    status: { $in: ['pending', 'confirmed'] },
+    startTime: { $lte: time },
+    endTime: { $gt: time }
+  });
+  
+  // Update availableSpots property
+  this.availableSpots = Math.max(0, this.totalSpots - activeReservations);
+  return this.availableSpots;
+};
+
+// Method to update and save available spots
+parkingLotSchema.methods.updateAvailableSpots = async function() {
+  await this.calculateAvailableSpots();
+  return this.save();
+};
+
 module.exports = mongoose.model('ParkingLot', parkingLotSchema); 
