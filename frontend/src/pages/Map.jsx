@@ -7,6 +7,7 @@ import { AuthContext } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
 import { socket, subscribeToParkingLot, unsubscribeFromParkingLot } from '../lib/socket';
 import api from '../lib/api';
+import TimeAvailabilitySelector from '../components/TimeAvailabilitySelector';
 
 // Fix Leaflet default icon issue
 delete L.Icon.Default.prototype._getIconUrl;
@@ -17,17 +18,50 @@ L.Icon.Default.mergeOptions({
 });
 
 // Create better marker icons for different availability states
-const createParkingIcon = (available, total) => {
+const createParkingIcon = (lot, selectedTime = null) => {
+  // Determine which availability to show
+  let available;
+  
+  if (selectedTime && lot.timeSpecificAvailability && 
+      new Date(lot.timeSpecificAvailability.lastUpdated).getTime() > Date.now() - 30000) {
+    // If we have time-specific data that's fresh (less than 30s old), use it
+    available = lot.timeSpecificAvailability.availableSpots;
+  } else if (lot.currentTimeAvailableSpots !== undefined) {
+    // If we have current time availability from the API, use that
+    available = lot.currentTimeAvailableSpots;
+  } else {
+    // Fall back to the regular availableSpots
+    available = lot.availableSpots;
+  }
+  
+  const total = lot.totalSpots;
   const percentage = available / total;
-  let color;
+  
+  let color = '#10b981'; // Default green
   
   if (available === 0) {
     color = '#ef4444'; // Red for full
   } else if (percentage < 0.3) {
     color = '#f59e0b'; // Amber for limited
-  } else {
-    color = '#10b981'; // Green for available
   }
+  
+  // Add a special indicator for time-filtered view
+  const displayTemplate = selectedTime ? 
+    `<div style="position: relative;">
+       <div style="
+         position: absolute;
+         top: -12px; 
+         left: 50%;
+         transform: translateX(-50%);
+         font-size: 10px;
+         background: rgba(0,0,0,0.7);
+         color: white;
+         padding: 1px 4px;
+         border-radius: 3px;
+       ">Future</div>
+       <div>${available}</div>
+     </div>` 
+    : `${available}`;
   
   return L.divIcon({
     className: 'custom-marker',
@@ -44,7 +78,7 @@ const createParkingIcon = (available, total) => {
         border-radius: 50%; 
         box-shadow: 0 2px 4px rgba(0,0,0,0.3);
         border: 2px solid white;
-      ">${available}</div>
+      ">${displayTemplate}</div>
     `,
     iconSize: [36, 36],
     iconAnchor: [18, 18]
@@ -80,6 +114,7 @@ const MapPage = () => {
   const mapRef = useRef(null);
   const { token, isAuthenticated } = useContext(AuthContext);
   const subscribedLots = useRef(new Set());
+  const [timeFilter, setTimeFilter] = useState(null);
 
   // Load parking lots on initial render - using default Chennai coordinates
   useEffect(() => {
@@ -117,33 +152,45 @@ const MapPage = () => {
 
   // Set up socket listeners
   useEffect(() => {
-    // Listen for availability updates
     const handleAvailabilityUpdate = (data) => {
       console.log('Received availability update:', data);
       
-      // Update the appropriate parking lot
+      // Don't update if this was an error
+      if (data.wasError) {
+        return;
+      }
+      
       setParkingLots(prevLots => 
-        prevLots.map(lot => 
-          lot._id === data.lotId 
-            ? { ...lot, availableSpots: data.availableSpots } 
-            : lot
-        )
+        prevLots.map(lot => {
+          if (lot._id !== data.lotId) return lot;
+          
+          // Get the right available spots value
+          let updatedLot = { 
+            ...lot,
+            availableSpots: data.currentAvailableSpots || lot.availableSpots
+          };
+          
+          // If there's reservation details for a specific time, update that info too
+          if (data.reservationDetails) {
+            updatedLot.timeSpecificAvailability = {
+              startTime: data.reservationDetails.startTime,
+              endTime: data.reservationDetails.endTime,
+              availableSpots: data.reservationDetails.availableSpotsForThisTime,
+              lastUpdated: new Date().toISOString()
+            };
+          }
+          
+          return updatedLot;
+        })
       );
     };
     
-    // Listen for both types of updates
     socket.on('availability-update', handleAvailabilityUpdate);
     socket.on('map-availability-update', handleAvailabilityUpdate);
     
     return () => {
-      // Clean up listeners on unmount
       socket.off('availability-update', handleAvailabilityUpdate);
       socket.off('map-availability-update', handleAvailabilityUpdate);
-      
-      // Unsubscribe from all lots
-      subscribedLots.current.forEach(lotId => {
-        unsubscribeFromParkingLot(lotId);
-      });
     };
   }, []);
   
@@ -258,7 +305,7 @@ const MapPage = () => {
         params: {
           longitude,
           latitude,
-          maxDistance: 5000 // 5km radius
+          maxDistance: 8000 // 5km radius
         },
         headers: {
           Authorization: token ? `Bearer ${token}` : '' 
@@ -316,6 +363,45 @@ const MapPage = () => {
     .finally(() => {
       setIsLoading(false);
     });
+  };
+
+  // After receiving initial parking lots data, update to get current availability
+  useEffect(() => {
+    if (parkingLots.length > 0) {
+      // For each lot, calculate and update current available spots
+      parkingLots.forEach(async (lot) => {
+        try {
+          // Get current time in ISO format
+          const now = new Date().toISOString();
+          // Get availability for current time
+          const response = await api.get(`/parking-lots/${lot._id}/check-availability`, {
+            params: {
+              startTime: now,
+              endTime: new Date(Date.now() + 3600000).toISOString() // 1 hour from now
+            }
+          });
+          
+          if (response.data && response.data.success) {
+            // Update the specific lot with accurate availability for current time
+            setParkingLots(prevLots => 
+              prevLots.map(prevLot => 
+                prevLot._id === lot._id 
+                  ? { ...prevLot, currentTimeAvailableSpots: response.data.data.availableSpots }
+                  : prevLot
+              )
+            );
+          }
+        } catch (error) {
+          console.error(`Error getting current availability for lot ${lot._id}:`, error);
+        }
+      });
+    }
+  }, [parkingLots.length]);
+
+  // Add a handler for time-specific availability changes
+  const handleAvailabilityChange = (updatedLots, timeRange) => {
+    setParkingLots(updatedLots);
+    setTimeFilter(timeRange);
   };
 
   return (
@@ -497,7 +583,7 @@ const MapPage = () => {
                   <Marker 
                     key={lot._id} 
                     position={position}
-                    icon={createParkingIcon(lot.availableSpots, lot.totalSpots)}
+                    icon={createParkingIcon(lot, timeFilter)}
                     eventHandlers={{
                       click: () => {
                         setSelectedLot(lot);
@@ -508,22 +594,46 @@ const MapPage = () => {
                       <div className="text-center p-1">
                         <h3 className="font-bold text-gray-900">{lot.name}</h3>
                         <p className="text-sm text-gray-500 mt-1">{lot.address || 'Address not available'}</p>
-                        <div className="flex justify-between items-center mt-2 text-sm">
-                          <span>
-                            <span className="font-medium">{lot.availableSpots}</span>/{lot.totalSpots} spots
-                          </span>
-                          <span className="font-medium">₹{lot.rates?.standard?.hourly || 'N/A'}/hr</span>
+                        
+                        {/* Display current availability info */}
+                        <div className="border-t border-gray-200 my-2 pt-2">
+                          <div className="text-xs font-medium text-gray-500">Current Availability:</div>
+                          <div className="flex justify-between items-center mt-2 text-sm">
+                            <span>
+                              <span className="font-medium">{lot.availableSpots}</span>/{lot.totalSpots} spots
+                            </span>
+                            <span className="font-medium">₹{lot.rates?.standard?.hourly || 'N/A'}/hr</span>
+                          </div>
                         </div>
+                        
+                        {/* Show time-specific availability if available */}
+                        {timeFilter && lot.timeSpecificAvailability && (
+                          <div className="border-t border-gray-200 my-2 pt-2">
+                            <div className="text-xs font-medium text-blue-600">
+                              For {new Date(timeFilter.startTime).toLocaleTimeString('en-IN', {
+                                timeZone: 'Asia/Kolkata',
+                                hour: '2-digit',
+                                minute: '2-digit',
+                                hour12: false
+                              })} IST:
+                            </div>
+                            <div className="text-sm font-bold mt-1">
+                              {lot.timeSpecificAvailability.availableSpots}/{lot.totalSpots} spots available
+                            </div>
+                          </div>
+                        )}
+                        
                         <button 
                           className={`mt-2 w-full py-1 px-3 rounded text-xs font-medium text-white ${
-                            lot.availableSpots === 0 
+                            (timeFilter ? lot.timeSpecificAvailability?.availableSpots === 0 : lot.availableSpots === 0)
                               ? 'bg-gray-400 cursor-not-allowed' 
                               : 'bg-blue-600 hover:bg-blue-700'
                           }`}
                           onClick={() => handleReservation(lot._id)}
-                          disabled={lot.availableSpots === 0}
+                          disabled={timeFilter ? lot.timeSpecificAvailability?.availableSpots === 0 : lot.availableSpots === 0}
                         >
-                          {lot.availableSpots === 0 ? 'Full' : 'Reserve Now'}
+                          {(timeFilter ? lot.timeSpecificAvailability?.availableSpots === 0 : lot.availableSpots === 0) 
+                            ? 'Full' : 'Reserve Now'}
                         </button>
                       </div>
                     </Popup>
@@ -540,6 +650,49 @@ const MapPage = () => {
             <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500"></div>
           </div>
         )}
+
+        <div className="absolute top-4 right-4 z-10">
+          <TimeAvailabilitySelector 
+            parkingLots={parkingLots}
+            onAvailabilityChange={handleAvailabilityChange}
+          />
+          
+          {timeFilter && (
+            <div className="mt-2 bg-blue-100 p-3 rounded-lg text-sm">
+              <p className="font-medium">Showing availability for:</p>
+              <p className="text-xs font-mono bg-gray-100 p-1 rounded my-1">
+                {/* Format time in IST */}
+                {new Date(timeFilter.startTime).toLocaleString('en-IN', {
+                  timeZone: 'Asia/Kolkata',
+                  year: 'numeric',
+                  month: '2-digit',
+                  day: '2-digit', 
+                  hour: '2-digit', 
+                  minute: '2-digit',
+                  hour12: false
+                })}
+                {' - '}
+                {new Date(timeFilter.endTime).toLocaleTimeString('en-IN', {
+                  timeZone: 'Asia/Kolkata',
+                  hour: '2-digit',
+                  minute: '2-digit',
+                  hour12: false
+                })}
+                {' IST'}
+              </p>
+              <button 
+                className="mt-2 text-blue-600 hover:text-blue-800"
+                onClick={() => {
+                  setTimeFilter(null);
+                  // Reset to current availability
+                  handleShowAllLots();
+                }}
+              >
+                Reset to current availability
+              </button>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

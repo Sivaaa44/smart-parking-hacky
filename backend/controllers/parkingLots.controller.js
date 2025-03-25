@@ -319,58 +319,118 @@ const parkingLotsController = {
       const { id } = req.params;
       const { startTime, endTime } = req.query;
       
+      console.log('Check availability request:', {
+        parkingLotId: id,
+        startTime,
+        endTime
+      });
+      
       if (!startTime || !endTime) {
         return res.status(400).json({
+          success: false,
           message: 'Both startTime and endTime are required'
+        });
+      }
+      
+      // Parse dates with logging
+      const start = new Date(startTime);
+      const end = new Date(endTime);
+      const now = new Date();
+      
+      console.log('Parsed check availability times:', {
+        start: start.toISOString(),
+        end: end.toISOString(),
+        startIST: start.toLocaleString('en-IN', {timeZone: 'Asia/Kolkata'}),
+        endIST: end.toLocaleString('en-IN', {timeZone: 'Asia/Kolkata'})
+      });
+      
+      if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid date format'
+        });
+      }
+      
+      if (end <= start) {
+        return res.status(400).json({
+          success: false,
+          message: 'End time must be after start time'
         });
       }
       
       // Find the parking lot
       const parkingLot = await ParkingLot.findById(id);
       if (!parkingLot) {
-        return res.status(404).json({ message: 'Parking lot not found' });
+        return res.status(404).json({
+          success: false,
+          message: 'Parking lot not found'
+        });
       }
       
-      // Reuse the isTimeSlotAvailable method from reservationsController
-      const isAvailable = await isTimeSlotAvailable(
-        id, 
-        new Date(startTime), 
-        new Date(endTime)
-      );
-      
-      // We need to get the count for the response, so get that from the same method
-      // that's used in isTimeSlotAvailable
-      const query = {
+      // Get reservations for the requested time period
+      const requestedTimeQuery = {
         parkingLot: id,
         status: { $in: ['pending', 'confirmed'] },
-        $or: [
-          { startTime: { $lte: new Date(startTime) }, endTime: { $gt: new Date(startTime) } },
-          { startTime: { $lt: new Date(endTime) }, endTime: { $gte: new Date(endTime) } },
-          { startTime: { $gte: new Date(startTime) }, endTime: { $lte: new Date(endTime) } }
-        ]
+        startTime: { $lt: end },
+        endTime: { $gt: start }
       };
       
-      const overlappingReservationsCount = await Reservation.countDocuments(query);
-      const spotsAvailableAtTime = parkingLot.totalSpots - overlappingReservationsCount;
+      const overlappingReservations = await Reservation.find(requestedTimeQuery);
+      const requestedTimeReservations = overlappingReservations.length;
+      const spotsAvailableForRequestedTime = Math.max(0, parkingLot.totalSpots - requestedTimeReservations);
+      
+      // Log the overlapping reservations
+      if (requestedTimeReservations > 0) {
+        console.log('Overlapping reservations found for time check:', overlappingReservations.map(r => ({
+          id: r._id,
+          start: new Date(r.startTime).toLocaleString('en-IN', {timeZone: 'Asia/Kolkata'}),
+          end: new Date(r.endTime).toLocaleString('en-IN', {timeZone: 'Asia/Kolkata'})
+        })));
+      }
+      
+      // Get current availability
+      const currentQuery = {
+        parkingLot: id,
+        status: { $in: ['pending', 'confirmed'] },
+        startTime: { $lte: now },
+        endTime: { $gt: now }
+      };
+      
+      const currentReservations = await Reservation.countDocuments(currentQuery);
+      const currentlyAvailableSpots = Math.max(0, parkingLot.totalSpots - currentReservations);
+      
+      // Update parking lot's current availability if it's incorrect
+      if (parkingLot.availableSpots !== currentlyAvailableSpots) {
+        console.log(`Updating ${parkingLot.name} availableSpots from ${parkingLot.availableSpots} to ${currentlyAvailableSpots}`);
+        parkingLot.availableSpots = currentlyAvailableSpots;
+        await parkingLot.save();
+      }
       
       res.json({
         success: true,
         data: {
           parkingLotId: id,
-          startTime,
-          endTime,
           totalSpots: parkingLot.totalSpots,
-          reservedSpots: overlappingReservationsCount,
-          availableSpots: spotsAvailableAtTime,
-          isAvailable: isAvailable
+          requestedTimeRange: {
+            start: start.toISOString(),
+            end: end.toISOString(),
+            startIST: start.toLocaleString('en-IN', {timeZone: 'Asia/Kolkata'}),
+            endIST: end.toLocaleString('en-IN', {timeZone: 'Asia/Kolkata'})
+          },
+          currentTime: now.toISOString(),
+          currentTimeIST: now.toLocaleString('en-IN', {timeZone: 'Asia/Kolkata'}),
+          currentlyAvailableSpots: currentlyAvailableSpots,
+          requestedTimeReservations: requestedTimeReservations,
+          availableSpots: spotsAvailableForRequestedTime,
+          isAvailable: spotsAvailableForRequestedTime > 0
         }
       });
     } catch (error) {
       console.error('Check availability error:', error);
-      res.status(500).json({ 
-        success: false, 
+      res.status(500).json({
+        success: false,
         message: 'Error checking availability',
-        error: error.message 
+        error: error.message
       });
     }
   }

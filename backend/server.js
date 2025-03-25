@@ -7,6 +7,7 @@ const http = require('http');
 const socketIo = require('socket.io');
 const ParkingSimulator = require('./utils/simulator');
 const reservationController = require('./controllers/reservations.controller');
+const { setupUpdateJob } = require('./jobs/updateAvailability');
 
 // Load environment variables before any other configuration
 dotenv.config();
@@ -106,6 +107,9 @@ io.on('connection', (socket) => {
     console.log('Client disconnected:', socket.id);
   });
 });
+
+// After setting up socket.io
+setupUpdateJob(io);
 
 // Error handling middleware
 app.use((req, res, next) => {

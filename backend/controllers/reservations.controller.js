@@ -2,14 +2,121 @@ const Reservation = require('../models/Reservation');
 const ParkingLot = require('../models/ParkingLot');
 const ParkingSlot = require('../models/ParkingSlot');
 const moment = require('moment');
+const dateUtils = require('../utils/dateUtils');
 
 // Define isTimeSlotAvailable BEFORE the controller object
 // Make it a standalone function
+// Add this helper function at the top
+const updateAvailabilityViaSocket = async (io, lot, startTime, endTime, availableSpots, wasError = false) => {
+  if (!io) return;
+  
+  try {
+    // Get current overlapping reservations
+    const now = new Date();
+    const currentQuery = {
+      parkingLot: lot._id,
+      status: { $in: ['pending', 'confirmed'] },
+      startTime: { $lte: now },
+      endTime: { $gt: now }
+    };
+    
+    const currentOverlappingCount = await Reservation.countDocuments(currentQuery);
+    const currentAvailableSpots = Math.max(0, lot.totalSpots - currentOverlappingCount);
+    
+    // Update lot's current availability if needed
+    if (lot.availableSpots !== currentAvailableSpots) {
+      lot.availableSpots = currentAvailableSpots;
+      await lot.save();
+    }
+    
+    // Emit the update with complete information
+    io.to(`lot-${lot._id}`).emit('availability-update', {
+      lotId: lot._id,
+      currentAvailableSpots: currentAvailableSpots,
+      wasError,
+      reservationDetails: {
+        startTime,
+        endTime,
+        availableSpotsForThisTime: availableSpots
+      }
+    });
+    
+    // Only emit map update if current availability changed
+    io.emit('map-availability-update', {
+      lotId: lot._id,
+      availableSpots: currentAvailableSpots,
+      wasError
+    });
+  } catch (error) {
+    console.error('Error updating availability via socket:', error);
+  }
+};
+
+const validateReservationRequest = async (parkingLotId, startTime, endTime) => {
+  const lot = await ParkingLot.findById(parkingLotId);
+  if (!lot) {
+    throw new Error('Parking lot not found');
+  }
+  
+  if (!lot.isOpen) {
+    throw new Error('Parking lot is currently closed');
+  }
+  
+  const start = new Date(startTime);
+  const end = new Date(endTime);
+  const now = new Date();
+  
+  if (start < now) {
+    throw new Error('Cannot book slots in the past');
+  }
+  
+  if (end <= start) {
+    throw new Error('End time must be after start time');
+  }
+  
+  const query = {
+    parkingLot: parkingLotId,
+    status: { $in: ['pending', 'confirmed'] },
+    startTime: { $lt: end },
+    endTime: { $gt: start }
+  };
+  
+  const overlappingReservationsCount = await Reservation.countDocuments(query);
+  const spotsAvailableAtTime = lot.totalSpots - overlappingReservationsCount;
+  
+  if (spotsAvailableAtTime <= 0) {
+    throw new Error('No spots available for the selected time period');
+  }
+  
+  return {
+    lot,
+    spotsAvailableAtTime,
+    overlappingReservationsCount
+  };
+};
+
 async function isTimeSlotAvailable(parkingLotId, startTime, endTime, excludeReservationId = null) {
   try {
-    // Parse the times to ensure they're Date objects
+    // Ensure proper timezone handling for IST
     const start = new Date(startTime);
     const end = new Date(endTime);
+    
+    // Log times for debugging
+    console.log('Checking time slot availability:', {
+      requestedStartTime: start.toISOString(),
+      requestedEndTime: end.toISOString(),
+      requestedStartTimeIST: start.toLocaleString('en-IN', {timeZone: 'Asia/Kolkata'}),
+      requestedEndTimeIST: end.toLocaleString('en-IN', {timeZone: 'Asia/Kolkata'})
+    });
+    
+    // Additional validation
+    if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+      throw new Error('Invalid start or end time provided');
+    }
+    
+    if (end <= start) {
+      throw new Error('End time must be after start time');
+    }
     
     // Find the parking lot
     const parkingLot = await ParkingLot.findById(parkingLotId);
@@ -17,32 +124,38 @@ async function isTimeSlotAvailable(parkingLotId, startTime, endTime, excludeRese
       throw new Error('Parking lot not found');
     }
     
-    // Create a query to find overlapping reservations
+    // Query for overlapping reservations
     const query = {
       parkingLot: parkingLotId,
-      status: { $in: ['pending', 'confirmed'] }, // Only check active reservations
-      $or: [
-        // Case 1: New reservation starts during an existing reservation
-        { startTime: { $lte: start }, endTime: { $gt: start } },
-        // Case 2: New reservation ends during an existing reservation
-        { startTime: { $lt: end }, endTime: { $gte: end } },
-        // Case 3: New reservation completely contains an existing reservation
-        { startTime: { $gte: start }, endTime: { $lte: end } }
-      ]
+      status: { $in: ['pending', 'confirmed'] },
+      startTime: { $lt: end },
+      endTime: { $gt: start }
     };
     
-    // If we're updating an existing reservation, exclude it from the check
+    // Exclude current reservation if updating
     if (excludeReservationId) {
       query._id = { $ne: excludeReservationId };
     }
     
-    // Count overlapping reservations with a single query
-    const overlappingReservationsCount = await Reservation.countDocuments(query);
+    // Count overlapping reservations and log them
+    const overlappingReservations = await Reservation.find(query);
+    const overlappingReservationsCount = overlappingReservations.length;
     
-    // Check if there are enough spots available at that time
-    const spotsAvailableAtTime = parkingLot.totalSpots - overlappingReservationsCount;
+    // Log overlapping reservations for debugging
+    if (overlappingReservationsCount > 0) {
+      console.log('Found overlapping reservations:', 
+        overlappingReservations.map(r => ({
+          id: r._id,
+          start: new Date(r.startTime).toLocaleString('en-IN', {timeZone: 'Asia/Kolkata'}),
+          end: new Date(r.endTime).toLocaleString('en-IN', {timeZone: 'Asia/Kolkata'})
+        }))
+      );
+    }
     
-    return spotsAvailableAtTime > 0;
+    // Calculate available spots during requested time
+    const availableSpotsAtTime = parkingLot.totalSpots - overlappingReservationsCount;
+    
+    return availableSpotsAtTime > 0;
   } catch (error) {
     console.error('Error checking time slot availability:', error);
     throw error;
@@ -56,35 +169,81 @@ const reservationsController = {
       const { parkingLotId, vehicleType, vehicleNumber, startTime, endTime } = req.body;
       const userId = req.user._id;
       
+      // Log the request data for debugging
+      console.log('Create reservation request:', {
+        parkingLotId,
+        vehicleType,
+        vehicleNumber,
+        startTime,
+        endTime
+      });
+      
       // Validate input
       if (!parkingLotId || !vehicleType || !vehicleNumber) {
         return res.status(400).json({
+          success: false,
           message: 'Missing required reservation data'
         });
       }
       
-      let parsedStartTime, parsedEndTime;
+      // Parse dates with IST consideration
+      let parsedStartTime = startTime ? new Date(startTime) : null;
+      let parsedEndTime = endTime ? new Date(endTime) : null;
       
-      // If no times provided, default to next available hour slot
-      if (!startTime || !endTime) {
-        parsedStartTime = moment().startOf('hour').add(1, 'hour').toDate();
-        parsedEndTime = moment(parsedStartTime).add(1, 'hour').toDate();
-      } else {
-        parsedStartTime = moment(startTime).toDate();
-        parsedEndTime = moment(endTime).toDate();
-      }
+      // Log the parsed times
+      console.log('Parsed times:', {
+        parsedStartTime: parsedStartTime?.toISOString(),
+        parsedEndTime: parsedEndTime?.toISOString(),
+        parsedStartTimeIST: parsedStartTime?.toLocaleString('en-IN', {timeZone: 'Asia/Kolkata'}),
+        parsedEndTimeIST: parsedEndTime?.toLocaleString('en-IN', {timeZone: 'Asia/Kolkata'})
+      });
       
-      // Validate times
-      if (moment(parsedStartTime).isBefore(moment())) {
-        return res.status(400).json({
-          message: 'Cannot book slots in the past'
+      // If no times provided, default to next hour
+      if (!parsedStartTime || !parsedEndTime) {
+        // Create date with IST offset
+        const now = new Date();
+        const istOffset = 330; // 5 hours 30 minutes in minutes
+        const nowIST = new Date(now.getTime() + (istOffset * 60000));
+        
+        // Round to next hour in IST
+        nowIST.setHours(nowIST.getHours() + 1);
+        nowIST.setMinutes(0, 0, 0);
+        
+        parsedStartTime = nowIST;
+        parsedEndTime = new Date(parsedStartTime);
+        parsedEndTime.setHours(parsedEndTime.getHours() + 1);
+        
+        console.log('Default times calculated:', {
+          parsedStartTime: parsedStartTime.toISOString(),
+          parsedEndTime: parsedEndTime.toISOString(),
+          parsedStartTimeIST: parsedStartTime.toLocaleString('en-IN', {timeZone: 'Asia/Kolkata'}),
+          parsedEndTimeIST: parsedEndTime.toLocaleString('en-IN', {timeZone: 'Asia/Kolkata'})
         });
       }
       
-      // Validate booking time window (e.g., only allow booking up to 24 hours in advance)
-      const maxBookingWindow = moment().add(24, 'hours');
-      if (moment(parsedStartTime).isAfter(maxBookingWindow)) {
+      // Validate start time is in the future
+      const now = new Date();
+      if (parsedStartTime <= now) {
         return res.status(400).json({
+          success: false,
+          message: 'Start time must be in the future'
+        });
+      }
+      
+      // Validate end time is after start time
+      if (parsedEndTime <= parsedStartTime) {
+        return res.status(400).json({
+          success: false,
+          message: 'End time must be after start time'
+        });
+      }
+      
+      // Validate booking window (max 24 hours in advance)
+      const maxBookingTime = new Date(now);
+      maxBookingTime.setHours(maxBookingTime.getHours() + 24);
+      if (parsedStartTime > maxBookingTime) {
+        return res.status(400).json({
+          success: false,
           message: 'Cannot book slots more than 24 hours in advance'
         });
       }
@@ -93,66 +252,54 @@ const reservationsController = {
       const lot = await ParkingLot.findById(parkingLotId);
       if (!lot) {
         return res.status(404).json({
+          success: false,
           message: 'Parking lot not found'
         });
       }
       
       if (!lot.isOpen) {
         return res.status(400).json({
+          success: false,
           message: 'Parking lot is currently closed'
         });
       }
       
-      // Use the standalone function instead of this.isTimeSlotAvailable
-      const isAvailable = await isTimeSlotAvailable(
-        parkingLotId, 
-        parsedStartTime, 
-        parsedEndTime
-      );
+      // Get overlapping reservations for requested time
+      const query = {
+        parkingLot: parkingLotId,
+        status: { $in: ['pending', 'confirmed'] },
+        startTime: { $lt: parsedEndTime },
+        endTime: { $gt: parsedStartTime }
+      };
       
-      if (!isAvailable) {
+      const overlappingReservationsCount = await Reservation.countDocuments(query);
+      const spotsAvailableForRequestedTime = lot.totalSpots - overlappingReservationsCount;
+      
+      if (spotsAvailableForRequestedTime <= 0) {
         return res.status(400).json({
+          success: false,
           message: 'No parking spots available for the selected time period'
         });
       }
       
-      // Calculate cost based on rates and duration
-      const durationHours = moment(parsedEndTime).diff(moment(parsedStartTime), 'hours', true);
-      
-      // Get the appropriate rate based on vehicle type
-      const rate = lot.rates[vehicleType]?.hourly || lot.rates.standard?.hourly;
-      if (!rate) {
-        return res.status(400).json({
-          message: `No rates defined for ${vehicleType}`
-        });
-      }
-      
+      // Calculate cost
+      const durationHours = (parsedEndTime - parsedStartTime) / (1000 * 60 * 60);
+      const rate = lot.rates[vehicleType]?.hourly || lot.rates.standard?.hourly || 50;
       const amount = Math.ceil(durationHours * rate);
       
-      // If the parking lot has individual slots, try to assign a specific slot
-      let assignedSlot = null;
-      if (process.env.USE_PARKING_SLOTS === 'true') {
-        try {
-          const availableSlots = await ParkingSlot.findAvailableSlots(
-            parkingLotId, 
-            parsedStartTime, 
-            parsedEndTime
-          );
-          
-          if (availableSlots.length > 0) {
-            assignedSlot = availableSlots[0];
-          }
-        } catch (error) {
-          console.warn('Could not assign specific parking slot:', error.message);
-          // Continue without a specific slot
-        }
+      // Check if reservation affects current availability
+      const isCurrentReservation = parsedStartTime <= now && parsedEndTime > now;
+      
+      // Only decrement current available spots if the reservation is for current time
+      if (isCurrentReservation) {
+        lot.availableSpots = Math.max(0, lot.availableSpots - 1);
+        await lot.save();
       }
       
-      // Create the reservation with slot if available
+      // Create the reservation
       const reservation = new Reservation({
         user: userId,
         parkingLot: parkingLotId,
-        parkingSlot: assignedSlot ? assignedSlot._id : undefined,
         vehicleType,
         vehicleNumber,
         startTime: parsedStartTime,
@@ -164,32 +311,44 @@ const reservationsController = {
       
       await reservation.save();
       
-      // If a slot was assigned, update it
-      if (assignedSlot) {
-        assignedSlot.currentReservation = reservation._id;
-        assignedSlot.isOccupied = true;
-        await assignedSlot.save();
-      }
-      
-      // Always update the lot's available spots count and emit the event
-      // This ensures the map is updated
-      lot.availableSpots = Math.max(0, lot.availableSpots - 1);
-      await lot.save();
-      
-      // Emit socket event to ALL connected clients (not just those in the room)
+      // Update available spots via socket
       const io = req.app.get('io');
       if (io) {
-        console.log(`Emitting availability update for lot ${lot._id}, now: ${lot.availableSpots}`);
-        // Emit to the specific room
+        // Get current availability for this lot (after this reservation)
+        const currentQuery = {
+          parkingLot: parkingLotId,
+          status: { $in: ['pending', 'confirmed'] },
+          startTime: { $lte: now },
+          endTime: { $gt: now }
+        };
+        
+        const currentReservationsCount = await Reservation.countDocuments(currentQuery);
+        const currentlyAvailableSpots = Math.max(0, lot.totalSpots - currentReservationsCount);
+        
+        // Update lot's available spots to match current reality if needed
+        if (lot.availableSpots !== currentlyAvailableSpots) {
+          lot.availableSpots = currentlyAvailableSpots;
+          await lot.save();
+        }
+        
+        // Emit time-specific and current availability
         io.to(`lot-${lot._id}`).emit('availability-update', {
           lotId: lot._id,
-          availableSpots: lot.availableSpots
+          currentAvailableSpots: currentlyAvailableSpots,
+          wasError: false,
+          reservationDetails: {
+            startTime: parsedStartTime,
+            endTime: parsedEndTime,
+            // Adjust by 1 to account for new reservation
+            availableSpotsForThisTime: spotsAvailableForRequestedTime - 1
+          }
         });
         
-        // Also emit to a general channel for clients that might not be in the room
+        // Also update the map view
         io.emit('map-availability-update', {
           lotId: lot._id,
-          availableSpots: lot.availableSpots
+          availableSpots: currentlyAvailableSpots,
+          wasError: false
         });
       }
       
@@ -202,7 +361,8 @@ const reservationsController = {
       res.status(500).json({
         success: false,
         message: 'Error creating reservation',
-        error: error.message
+        error: error.message,
+        stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
       });
     }
   },
@@ -249,15 +409,28 @@ const reservationsController = {
         });
       }
       
+      // Save old status for tracking
+      const oldStatus = reservation.status;
+      
+      // Update reservation status
       reservation.status = 'cancelled';
       await reservation.save();
       
-      // Update parking lot availability
+      // Get the parking lot
       const lot = await ParkingLot.findById(reservation.parkingLot);
-      lot.availableSpots += 1;
-      await lot.save();
       
-      // Update slot
+      // Only increment availableSpots if this reservation is currently active
+      // i.e., it's happening right now
+      const now = new Date();
+      if (reservation.startTime <= now && reservation.endTime > now) {
+        lot.availableSpots = Math.min(lot.totalSpots, lot.availableSpots + 1);
+        await lot.save();
+      } else {
+        // Recalculate current availability to be sure
+        await lot.updateAvailableSpots();
+      }
+      
+      // Update slot if assigned
       const slot = await ParkingSlot.findById(reservation.parkingSlot);
       if (slot) {
         slot.isOccupied = false;
@@ -270,7 +443,18 @@ const reservationsController = {
       if (io) {
         io.to(`lot-${lot._id}`).emit('availability-update', {
           lotId: lot._id,
-          availableSpots: lot.availableSpots
+          availableSpots: lot.availableSpots,
+          wasCancelled: true,
+          forTime: {
+            start: reservation.startTime,
+            end: reservation.endTime
+          }
+        });
+        
+        io.emit('map-availability-update', {
+          lotId: lot._id,
+          availableSpots: lot.availableSpots,
+          wasCancelled: true
         });
       }
       
@@ -292,10 +476,49 @@ const reservationsController = {
   async createReservationSocket(data) {
     try {
       const { userId, lotId, vehicleType, vehicleNumber, startTime, endTime } = data;
+      if (!lotId || !vehicleType || !vehicleNumber) {
+        return res.status(400).json({
+          message: 'Missing required reservation data'
+        });
+      }
       
-      // Perform validation and creation (similar to createReservation)
-      // ... (same validation logic as above)
+      let parsedStartTime, parsedEndTime;
+      if (!startTime || !endTime) {
+        parsedStartTime = moment().startOf('hour').add(1, 'hour').toDate();
+        parsedEndTime = moment(parsedStartTime).add(1, 'hour').toDate();
+      } else {
+        parsedStartTime = moment(startTime).toDate();
+        parsedEndTime = moment(endTime).toDate();
+      }
       
+      // Validate times
+      if (moment(parsedStartTime).isBefore(moment())) {
+        return res.status(400).json({
+          message: 'Cannot book slots in the past'
+        });
+      }
+      
+      // Validate booking time window (e.g., only allow booking up to 24 hours in advance)
+      const maxBookingWindow = moment().add(24, 'hours');
+      if (moment(parsedStartTime).isAfter(maxBookingWindow)) {
+        return res.status(400).json({
+          message: 'Cannot book slots more than 24 hours in advance'
+        });
+      }
+      
+      // Check if lot exists
+      const lott = await ParkingLot.findById(lotId);
+      if (!lott) {
+        return res.status(404).json({
+          message: 'Parking lot not found'
+        });
+      }
+      
+      if (!lott.isOpen) {
+        return res.status(400).json({
+          message: 'Parking lot is currently closed'
+        });
+      }
       // Check if lot exists and has availability
       const lot = await ParkingLot.findById(lotId);
       if (!lot) {
@@ -315,7 +538,7 @@ const reservationsController = {
       let availableSlot = null;
       
       for (const slot of slots) {
-        if (await slot.isAvailableForPeriod(startTime, endTime)) {
+        if (await slot.isAvailableForPeriod(parsedStartTime, parsedEndTime)) {
           availableSlot = slot;
           break;
         }
@@ -326,9 +549,19 @@ const reservationsController = {
       }
       
       // Calculate cost
-      const durationHours = moment(endTime).diff(moment(startTime), 'hours', true);
+      const durationHours = moment(parsedEndTime).diff(moment(parsedStartTime), 'hours', true);
       const rate = lot.rates[vehicleType]?.hourly || 50;
       const amount = Math.ceil(durationHours * rate);
+      
+      // If this reservation affects current availability, update the count
+      const now = new Date();
+      if (parsedStartTime <= now && parsedEndTime > now) {
+        lot.availableSpots = Math.max(0, lot.availableSpots - 1);
+      } else {
+        // Otherwise recalculate to be sure
+        await lot.calculateAvailableSpots();
+      }
+      await lot.save();
       
       // Create the reservation
       const reservation = new Reservation({
@@ -337,18 +570,14 @@ const reservationsController = {
         parkingSlot: availableSlot._id,
         vehicleType,
         vehicleNumber,
-        startTime,
-        endTime,
+        startTime: parsedStartTime,
+        endTime: parsedEndTime,
         amount,
         status: 'pending',
         paymentStatus: 'pending'
       });
       
       await reservation.save();
-      
-      // Update parking lot availability
-      lot.availableSpots -= 1;
-      await lot.save();
       
       // Update slot
       availableSlot.currentReservation = reservation._id;
@@ -357,7 +586,8 @@ const reservationsController = {
       
       return {
         reservation,
-        updatedAvailability: lot.availableSpots
+        updatedAvailability: lot.availableSpots,
+        isCurrentReservation: parsedStartTime <= now && parsedEndTime > now
       };
     } catch (error) {
       console.error('Create reservation socket error:', error);

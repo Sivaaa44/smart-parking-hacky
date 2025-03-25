@@ -58,26 +58,65 @@ const parkingLotSchema = new mongoose.Schema({
 parkingLotSchema.index({ location: '2dsphere' });
 
 // Method to calculate real-time available spots
-parkingLotSchema.methods.calculateAvailableSpots = async function(time = new Date()) {
-  const Reservation = mongoose.model('Reservation');
+parkingLotSchema.methods.calculateAvailableSpots = async function() {
+  const now = new Date();
   
-  // Count active reservations for the given time
+  // Find active reservations that overlap with current time
   const activeReservations = await Reservation.countDocuments({
     parkingLot: this._id,
     status: { $in: ['pending', 'confirmed'] },
-    startTime: { $lte: time },
-    endTime: { $gt: time }
+    startTime: { $lte: now },
+    endTime: { $gt: now }
   });
   
-  // Update availableSpots property
-  this.availableSpots = Math.max(0, this.totalSpots - activeReservations);
-  return this.availableSpots;
+  // Calculate available spots for current time
+  const availableSpots = Math.max(0, this.totalSpots - activeReservations);
+  
+  // Update the parking lot
+  this.availableSpots = availableSpots;
+  await this.save();
+  
+  return availableSpots;
 };
 
 // Method to update and save available spots
 parkingLotSchema.methods.updateAvailableSpots = async function() {
   await this.calculateAvailableSpots();
   return this.save();
+};
+
+// Method to get availability for a specific time period
+parkingLotSchema.methods.getAvailabilityForTime = async function(startTime, endTime) {
+  // Parse the times
+  const start = new Date(startTime);
+  const end = new Date(endTime);
+  
+  // Find reservations that overlap with the specified time period
+  const overlappingReservations = await Reservation.countDocuments({
+    parkingLot: this._id,
+    status: { $in: ['pending', 'confirmed'] },
+    startTime: { $lt: end },
+    endTime: { $gt: start }
+  });
+  
+  // Calculate available spots for specified time
+  return Math.max(0, this.totalSpots - overlappingReservations);
+};
+
+// Add a scheduled task to update parking lot availability
+parkingLotSchema.statics.updateAllAvailability = async function() {
+  const now = new Date();
+  console.log(`Running scheduled update at ${now.toLocaleString('en-IN', {timeZone: 'Asia/Kolkata'})}`);
+  
+  // Get all parking lots
+  const parkingLots = await this.find();
+  
+  // Update each parking lot's availability
+  for (const lot of parkingLots) {
+    await lot.calculateAvailableSpots();
+  }
+  
+  console.log(`Updated availability for ${parkingLots.length} parking lots`);
 };
 
 module.exports = mongoose.model('ParkingLot', parkingLotSchema); 

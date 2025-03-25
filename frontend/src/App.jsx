@@ -10,6 +10,7 @@ import ReservationForm from './pages/ReservationForm';
 import Reservations from './pages/Reservations';
 import Profile from './pages/Profile';
 import NotFound from './pages/NotFound';
+import TimeZoneBanner from './components/TimeZoneBanner';
 
 function App() {
   return (
