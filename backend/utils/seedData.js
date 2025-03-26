@@ -5,7 +5,7 @@ const dotenv = require('dotenv');
 
 dotenv.config();
 
-
+// Updated parking lots data with simplified slot counts
 const chennaiParkingLots = [
   {
     name: "T Nagar Parking Complex",
@@ -15,8 +15,8 @@ const chennaiParkingLots = [
     },
     address: "Pondy Bazaar, T Nagar",
     landmark: "Near Panagal Park",
-    totalSpots: 20,
-    availableSpots: 20,
+    totalSpots: 2, // Reduced to 2 slots
+    availableSpots: 2,
     isOpen: true,
     types: ["car", "bike"],
     rates: {
@@ -42,8 +42,8 @@ const chennaiParkingLots = [
     },
     address: "2nd Avenue, Anna Nagar",
     landmark: "Near Tower Park",
-    totalSpots: 20,
-    availableSpots: 20,
+    totalSpots: 2, // Reduced to 2 slots
+    availableSpots: 2,
     isOpen: true,
     types: ["car", "bike"],
     rates: {
@@ -69,8 +69,8 @@ const chennaiParkingLots = [
     },
     address: "Mylapore, Chennai",
     landmark: "Near Kapaleeshwarar Temple",
-    totalSpots: 20,
-    availableSpots: 20,
+    totalSpots: 1, // Reduced to 1 slot
+    availableSpots: 1,
     isOpen: true,
     types: ["car", "bike"],
     rates: {
@@ -96,8 +96,8 @@ const chennaiParkingLots = [
     },
     address: "Marina Beach Road",
     landmark: "Opposite Marina Lighthouse",
-    totalSpots: 20,
-    availableSpots: 20,
+    totalSpots: 1, // Reduced to 1 slot
+    availableSpots: 1,
     isOpen: true,
     types: ["car", "bike"],
     rates: {
@@ -119,14 +119,14 @@ const chennaiParkingLots = [
 
 const createParkingSlots = async (parkingLot) => {
   const slots = [];
-  const totalSlots = parkingLot.totalSpots || 20; // Fallback to 20 if not defined
+  const totalSlots = parkingLot.totalSpots || 1; // Fallback to 1 if not defined
   
   for (let i = 1; i <= totalSlots; i++) {
     const slot = new ParkingSlot({
       parkingLot: parkingLot._id,
-      slotNumber: `A${i.toString().padStart(3, '0')}`,
+      slotNumber: `A${i.toString().padStart(2, '0')}`, // Simplified slot numbering
       isOccupied: false,
-      type: i % 10 === 0 ? 'handicap' : i % 20 === 0 ? 'electric' : 'standard'
+      type: 'standard' // All slots standard for simplified testing
     });
     await slot.save();
     slots.push(slot._id);

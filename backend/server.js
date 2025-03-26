@@ -89,7 +89,12 @@ io.on('connection', (socket) => {
       
       io.to(`lot-${data.lotId}`).emit('availability-update', {
         lotId: data.lotId,
-        availableSpots: result.updatedAvailability
+        currentAvailableSpots: result.updatedAvailability,
+        reservationDetails: {
+          startTime: result.startTime,
+          endTime: result.endTime,
+          availableSpotsForThisTime: result.futureAvailability
+        }
       });
     } catch (error) {
       socket.emit('reservation-status', { 

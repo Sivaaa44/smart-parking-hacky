@@ -1,36 +1,36 @@
 const cron = require('node-cron');
 const ParkingLot = require('../models/ParkingLot');
-const mongoose = require('mongoose');
 
-// Setup update job to run every 5 minutes
+/**
+ * Setup job to update parking lot availabilities
+ * Runs every 5 minutes to ensure accurate data
+ */
 const setupUpdateJob = (io) => {
+  // Schedule job to run every 5 minutes
   cron.schedule('*/5 * * * *', async () => {
     try {
-      console.log('Running parking lot availability update job...');
-      
-      // Ensure mongoose is connected
-      if (mongoose.connection.readyState !== 1) {
-        await mongoose.connect(process.env.MONGODB_URI);
-      }
+      console.log(`[${new Date().toISOString()}] Running parking lot availability update job`);
       
       // Update all parking lots
-      await ParkingLot.updateAllAvailability();
+      const parkingLots = await ParkingLot.find();
+      let updatedCount = 0;
       
-      // Get all parking lots to broadcast updates
-      const lots = await ParkingLot.find({}, '_id availableSpots');
-      
-      // Broadcast updates to all clients
-      if (io) {
-        lots.forEach(lot => {
+      for (const lot of parkingLots) {
+        const oldAvailability = lot.availableSpots;
+        await lot.calculateAvailableSpots();
+        
+        // If availability changed, emit socket update
+        if (oldAvailability !== lot.availableSpots && io) {
           io.emit('map-availability-update', {
             lotId: lot._id,
             availableSpots: lot.availableSpots,
-            wasAutoUpdate: true
+            wasScheduledUpdate: true
           });
-        });
-        
-        console.log(`Broadcast availability updates for ${lots.length} lots`);
+          updatedCount++;
+        }
       }
+      
+      console.log(`[${new Date().toISOString()}] Updated ${updatedCount} parking lots with changed availability`);
     } catch (error) {
       console.error('Error in parking lot update job:', error);
     }

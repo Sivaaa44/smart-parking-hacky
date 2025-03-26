@@ -28,39 +28,56 @@ const parkingSlotSchema = new mongoose.Schema({
   }
 });
 
-// Method to check if slot is available for a time period
-parkingSlotSchema.methods.isAvailableForPeriod = async function(startTime, endTime) {
-  const Reservation = mongoose.model('Reservation');
+/**
+ * Check if slot is available at current time
+ */
+parkingSlotSchema.methods.isAvailable = async function() {
+  if (this.isOccupied) {
+    return false;
+  }
   
-  // Convert times to UTC for consistent comparison
-  const start = moment(startTime).utc();
-  const end = moment(endTime).utc();
-
-  const existingReservations = await Reservation.find({
-    parkingSlot: this._id,
-    status: 'active',
-    $or: [
-      {
-        startTime: { $lt: end.toDate() },
-        endTime: { $gt: start.toDate() }
-      }
-    ]
-  });
-
-  return existingReservations.length === 0;
+  if (!this.currentReservation) {
+    return true;
+  }
+  
+  // If there's a currentReservation, check if it's active
+  const Reservation = mongoose.model('Reservation');
+  const reservation = await Reservation.findById(this.currentReservation);
+  
+  return !reservation || reservation.status !== 'active';
 };
 
-// Static method to find available slots for a time period
-parkingSlotSchema.statics.findAvailableSlots = async function(parkingLotId, startTime, endTime) {
+/**
+ * Occupy this slot with a reservation
+ */
+parkingSlotSchema.methods.occupy = async function(reservationId) {
+  this.isOccupied = true;
+  this.currentReservation = reservationId;
+  return this.save();
+};
+
+/**
+ * Release this slot
+ */
+parkingSlotSchema.methods.release = async function() {
+  this.isOccupied = false;
+  this.currentReservation = null;
+  return this.save();
+};
+
+/**
+ * Static method to find available slots in a lot
+ */
+parkingSlotSchema.statics.findAvailable = async function(parkingLotId) {
   const slots = await this.find({ parkingLot: parkingLotId });
   const availableSlots = [];
-
+  
   for (const slot of slots) {
-    if (await slot.isAvailableForPeriod(startTime, endTime)) {
+    if (await slot.isAvailable()) {
       availableSlots.push(slot);
     }
   }
-
+  
   return availableSlots;
 };
 
